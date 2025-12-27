@@ -1,0 +1,5 @@
+{
+  "name": "WinOS Web",
+  "description": "A fully interactive, responsive Windows-11 style desktop environment running in the browser using React and Tailwind CSS.",
+  "requestFramePermissions": []
+}
