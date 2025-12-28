@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Minus, Square, X, Maximize2, AlertTriangle, LayoutTemplate } from 'lucide-react';
+import { Minus, Square, X, Maximize2, AlertTriangle, LayoutTemplate, RotateCw, Pin, PictureInPicture2 } from 'lucide-react';
 import { WindowState } from '../../types';
 import { useOS } from '../../context/OSContext';
 import { APPS } from '../../constants';
@@ -10,8 +10,8 @@ interface Props {
 }
 
 const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
-  const { focusWindow, closeWindow, minimizeWindow, maximizeWindow, snapWindow, updateWindowPosition, updateWindowSize } = useOS();
-  const { id, appId, title, isMaximized, position, size, zIndex, isMinimized, isCrashed } = windowState;
+  const { focusWindow, closeWindow, minimizeWindow, maximizeWindow, snapWindow, updateWindowPosition, updateWindowSize, relaunchApp, toggleAlwaysOnTop, togglePiP } = useOS();
+  const { id, appId, title, isMaximized, position, size, zIndex, isMinimized, isCrashed, isAlwaysOnTop, isPiP } = windowState;
   const appConfig = APPS[appId];
 
   const windowRef = useRef<HTMLDivElement>(null);
@@ -20,14 +20,13 @@ const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeDirection, setResizeDirection] = useState<string | null>(null);
   
-  // Snap Menu State
   const [showSnapMenu, setShowSnapMenu] = useState(false);
-  // Replaced NodeJS.Timeout with ReturnType<typeof setTimeout> for broader compatibility
   const snapMenuTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Mouse Down for Dragging
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (isMaximized) return;
+    if (isMaximized && !isPiP) return; // Prevent drag if maximized unless PiP (PiP shouldn't be maximized anyway)
+    
     const target = e.target as HTMLElement;
     if (target.closest('.window-controls')) return;
 
@@ -58,8 +57,8 @@ const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
 
       if (isResizing && windowRef.current) {
          const rect = windowRef.current.getBoundingClientRect();
-         const minWidth = 300;
-         const minHeight = 200;
+         const minWidth = isPiP ? 200 : 300;
+         const minHeight = isPiP ? 120 : 200;
          let newWidth = size.width;
          let newHeight = size.height;
 
@@ -85,20 +84,27 @@ const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, isResizing, dragOffset, id, updateWindowPosition, updateWindowSize, size, resizeDirection]);
+  }, [isDragging, isResizing, dragOffset, id, updateWindowPosition, updateWindowSize, size, resizeDirection, isPiP]);
 
   if (isMinimized) return null;
+
+  // Calculate Z-Index: If always on top, boost by 1000
+  const effectiveZIndex = zIndex + (isAlwaysOnTop ? 1000 : 0);
 
   return (
     <div
       ref={windowRef}
-      className={`absolute flex flex-col bg-white dark:bg-slate-800 rounded-lg shadow-2xl overflow-hidden border border-gray-200 dark:border-gray-700 transition-all duration-75 ${isDragging ? 'opacity-90' : 'opacity-100'} ${isCrashed ? 'grayscale opacity-50 pointer-events-none' : ''}`}
+      className={`absolute flex flex-col bg-white dark:bg-slate-800 rounded-lg shadow-2xl overflow-hidden border border-gray-200 dark:border-gray-700 transition-all duration-75 
+        ${isDragging ? 'opacity-90' : 'opacity-100'} 
+        ${isCrashed ? 'grayscale pointer-events-none' : ''}
+        ${isPiP ? 'border-2 border-blue-500 shadow-[0_0_20px_rgba(0,0,0,0.3)]' : ''}
+      `}
       style={{
         left: position.x,
         top: position.y,
         width: size.width,
         height: size.height,
-        zIndex: zIndex,
+        zIndex: effectiveZIndex,
         transform: isMaximized ? 'none' : 'translate(0,0)',
         borderRadius: isMaximized ? 0 : '0.5rem',
       }}
@@ -106,62 +112,87 @@ const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
     >
       {/* Title Bar */}
       <div 
-        className={`h-9 bg-gray-100 dark:bg-slate-900 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center px-2 select-none ${isCrashed ? 'bg-red-100 dark:bg-red-900/30' : ''}`}
+        className={`h-9 bg-gray-100 dark:bg-slate-900 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center px-2 select-none 
+           ${isCrashed ? 'bg-red-100 dark:bg-red-900/30' : ''}
+           ${isPiP ? 'h-6' : ''} 
+        `}
         onMouseDown={handleMouseDown}
-        onDoubleClick={() => maximizeWindow(id)}
+        onDoubleClick={() => !isPiP && maximizeWindow(id)}
       >
         <div className="flex items-center gap-2">
-          {isCrashed ? <AlertTriangle size={16} className="text-red-500" /> : <appConfig.icon size={16} className="text-blue-500" />}
-          <span className="text-xs font-medium text-gray-700 dark:text-gray-200">
+          {!isPiP && (
+            isCrashed ? <AlertTriangle size={16} className="text-red-500" /> : <appConfig.icon size={16} className="text-blue-500" />
+          )}
+          <span className={`font-medium text-gray-700 dark:text-gray-200 ${isPiP ? 'text-[10px]' : 'text-xs'}`}>
              {title} {isCrashed ? '(Not Responding)' : ''}
           </span>
         </div>
         
-        <div className="window-controls flex items-center h-full relative">
-          <button onClick={(e) => { e.stopPropagation(); minimizeWindow(id); }} className="w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300">
-            <Minus size={14} />
-          </button>
-          
-          {/* Maximize / Snap Button */}
-          <div 
-             className="relative h-full"
-             onMouseEnter={() => {
-                if (snapMenuTimeout.current) clearTimeout(snapMenuTimeout.current);
-                setShowSnapMenu(true);
-             }}
-             onMouseLeave={() => {
-                snapMenuTimeout.current = setTimeout(() => setShowSnapMenu(false), 500);
-             }}
-          >
-            <button 
-                onClick={(e) => { e.stopPropagation(); maximizeWindow(id); }} 
-                className="w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300"
-            >
-                {isMaximized ? <Maximize2 size={12} /> : <Square size={12} />}
-            </button>
+        <div className="window-controls flex items-center h-full relative pointer-events-auto">
+          {/* Extra Window Tools (Pin, PiP) */}
+          {!isPiP && (
+             <button 
+               onClick={(e) => { e.stopPropagation(); toggleAlwaysOnTop(id); }} 
+               className={`w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 ${isAlwaysOnTop ? 'text-blue-500' : 'text-gray-400'}`}
+               title="Always On Top"
+             >
+               <Pin size={12} className={isAlwaysOnTop ? 'fill-current' : ''} />
+             </button>
+          )}
 
-            {/* Snap Layouts Popup */}
-            {showSnapMenu && (
-               <div className="absolute top-full right-0 mt-2 p-2 bg-gray-100 dark:bg-gray-700 rounded-lg shadow-xl border border-gray-300 dark:border-gray-600 z-[100] w-32 flex gap-2 animate-fade-in">
-                   {/* Left Split */}
-                   <div 
-                      className="flex-1 h-12 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-500 rounded flex cursor-pointer hover:bg-blue-100"
-                      onClick={(e) => { e.stopPropagation(); snapWindow(id, 'left'); setShowSnapMenu(false); }}
-                      title="Snap Left"
-                   >
-                      <div className="w-1/2 h-full bg-blue-500/50 rounded-l"></div>
-                   </div>
-                   {/* Right Split */}
-                   <div 
-                      className="flex-1 h-12 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-500 rounded flex cursor-pointer hover:bg-blue-100"
-                      onClick={(e) => { e.stopPropagation(); snapWindow(id, 'right'); setShowSnapMenu(false); }}
-                      title="Snap Right"
-                   >
-                       <div className="w-1/2 h-full ml-auto bg-blue-500/50 rounded-r"></div>
-                   </div>
+          <button 
+             onClick={(e) => { e.stopPropagation(); togglePiP(id); }} 
+             className={`w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 ${isPiP ? 'text-blue-500' : 'text-gray-400'}`}
+             title="Picture-in-Picture"
+          >
+             <PictureInPicture2 size={12} />
+          </button>
+
+          {!isPiP && (
+            <>
+               <button onClick={(e) => { e.stopPropagation(); minimizeWindow(id); }} className="w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300">
+                 <Minus size={14} />
+               </button>
+               
+               <div 
+                  className="relative h-full"
+                  onMouseEnter={() => {
+                     if (snapMenuTimeout.current) clearTimeout(snapMenuTimeout.current);
+                     setShowSnapMenu(true);
+                  }}
+                  onMouseLeave={() => {
+                     snapMenuTimeout.current = setTimeout(() => setShowSnapMenu(false), 500);
+                  }}
+               >
+                 <button 
+                     onClick={(e) => { e.stopPropagation(); maximizeWindow(id); }} 
+                     className="w-8 h-full flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300"
+                 >
+                     {isMaximized ? <Maximize2 size={12} /> : <Square size={12} />}
+                 </button>
+     
+                 {/* Snap Layouts Popup */}
+                 {showSnapMenu && (
+                    <div className="absolute top-full right-0 mt-2 p-2 bg-gray-100 dark:bg-gray-700 rounded-lg shadow-xl border border-gray-300 dark:border-gray-600 z-[100] w-32 flex gap-2 animate-fade-in">
+                        <div 
+                           className="flex-1 h-12 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-500 rounded flex cursor-pointer hover:bg-blue-100"
+                           onClick={(e) => { e.stopPropagation(); snapWindow(id, 'left'); setShowSnapMenu(false); }}
+                           title="Snap Left"
+                        >
+                           <div className="w-1/2 h-full bg-blue-500/50 rounded-l"></div>
+                        </div>
+                        <div 
+                           className="flex-1 h-12 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-500 rounded flex cursor-pointer hover:bg-blue-100"
+                           onClick={(e) => { e.stopPropagation(); snapWindow(id, 'right'); setShowSnapMenu(false); }}
+                           title="Snap Right"
+                        >
+                            <div className="w-1/2 h-full ml-auto bg-blue-500/50 rounded-r"></div>
+                        </div>
+                    </div>
+                 )}
                </div>
-            )}
-          </div>
+            </>
+          )}
 
           <button onClick={(e) => { e.stopPropagation(); closeWindow(id); }} className="w-8 h-full flex items-center justify-center hover:bg-red-500 hover:text-white text-gray-600 dark:text-gray-300 transition-colors">
             <X size={14} />
@@ -176,21 +207,39 @@ const WindowFrame: React.FC<Props> = ({ windowState, children }) => {
         
         {/* Crashed Overlay */}
         {isCrashed && (
-           <div className="absolute inset-0 bg-white/50 dark:bg-black/50 flex items-center justify-center z-[60]">
-               <div className="bg-white p-4 shadow-lg border border-gray-300 rounded text-center">
-                  <p className="mb-2">This application has stopped working.</p>
-                  <div className="w-full h-1 bg-blue-500 animate-pulse"></div>
+           <div className="absolute inset-0 bg-white/70 dark:bg-black/70 flex items-center justify-center z-[999] pointer-events-auto backdrop-blur-sm">
+               <div className="bg-white dark:bg-[#2b2b2b] p-6 shadow-2xl border border-gray-200 dark:border-gray-600 rounded-lg text-center max-w-sm w-full animate-fade-in">
+                  <AlertTriangle className="mx-auto text-yellow-500 mb-4" size={48} />
+                  <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">{title} is not responding</h3>
+                  <div className="flex flex-col gap-2 mt-4">
+                     <button 
+                       onClick={() => relaunchApp(id)}
+                       className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded flex items-center justify-center gap-2 transition-colors"
+                     >
+                        <RotateCw size={16} /> Restart
+                     </button>
+                     <button 
+                       onClick={() => closeWindow(id)}
+                       className="w-full py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-white rounded transition-colors"
+                     >
+                        Close
+                     </button>
+                  </div>
                </div>
            </div>
         )}
       </div>
 
       {/* Resize Handles */}
-      {!isMaximized && (
+      {(!isMaximized && !isCrashed) && (
         <>
           <div className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50" onMouseDown={(e) => handleResizeStart(e, 'se')} />
-          <div className="absolute right-0 top-0 bottom-0 w-1 cursor-e-resize z-40" onMouseDown={(e) => handleResizeStart(e, 'e')} />
-          <div className="absolute bottom-0 left-0 right-0 h-1 cursor-s-resize z-40" onMouseDown={(e) => handleResizeStart(e, 's')} />
+          {!isPiP && (
+             <>
+               <div className="absolute right-0 top-0 bottom-0 w-1 cursor-e-resize z-40" onMouseDown={(e) => handleResizeStart(e, 'e')} />
+               <div className="absolute bottom-0 left-0 right-0 h-1 cursor-s-resize z-40" onMouseDown={(e) => handleResizeStart(e, 's')} />
+             </>
+          )}
         </>
       )}
     </div>

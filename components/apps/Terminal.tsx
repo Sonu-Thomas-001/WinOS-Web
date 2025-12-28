@@ -2,15 +2,22 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useOS } from '../../context/OSContext';
 
 const TerminalApp: React.FC = () => {
-  const { fs, currentUser } = useOS();
+  const { fs, currentUser, windows, closeWindow, system } = useOS();
   const [history, setHistory] = useState<string[]>(['Microsoft Windows [Version 10.0.19045.3693]', '(c) Microsoft Corporation. All rights reserved.', '']);
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const [input, setInput] = useState('');
   const [currentDirId, setCurrentDirId] = useState<string>('guest'); // Start at user home
   
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [history]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
   }, [history]);
 
   // Construct display path
@@ -21,8 +28,41 @@ const TerminalApp: React.FC = () => {
     if (e.key === 'Enter') {
       const cmd = input.trim();
       setHistory(prev => [...prev, `${displayPath}> ${input}`]);
+      if (cmd) {
+         setCommandHistory(prev => [cmd, ...prev]);
+         setHistoryIndex(-1);
+      }
       processCommand(cmd);
       setInput('');
+    } else if (e.key === 'ArrowUp') {
+       e.preventDefault();
+       if (historyIndex < commandHistory.length - 1) {
+          const newIndex = historyIndex + 1;
+          setHistoryIndex(newIndex);
+          setInput(commandHistory[newIndex]);
+       }
+    } else if (e.key === 'ArrowDown') {
+       e.preventDefault();
+       if (historyIndex > 0) {
+          const newIndex = historyIndex - 1;
+          setHistoryIndex(newIndex);
+          setInput(commandHistory[newIndex]);
+       } else if (historyIndex === 0) {
+          setHistoryIndex(-1);
+          setInput('');
+       }
+    } else if (e.key === 'Tab') {
+       e.preventDefault();
+       const parts = input.split(' ');
+       const partial = parts[parts.length - 1];
+       if (partial) {
+          const matches = fs.getContents(currentDirId).filter(n => n.name.toLowerCase().startsWith(partial.toLowerCase()));
+          if (matches.length === 1) {
+             parts.pop();
+             parts.push(matches[0].name);
+             setInput(parts.join(' '));
+          }
+       }
     }
   };
 
@@ -36,10 +76,11 @@ const TerminalApp: React.FC = () => {
     const command = parts[0].toLowerCase();
     const args = parts.slice(1);
     let response = '';
+    const extraLines: string[] = [];
 
     switch (command) {
       case 'help':
-        response = 'Commands: cls, ver, date, echo, whoami, dir, cd, mkdir, type, touch';
+        response = 'Commands: cls, ver, date, echo, whoami, dir, cd, mkdir, type, touch, ps, kill, neofetch';
         break;
       case 'ver':
         response = 'Microsoft Windows [Version 10.0.19045.3693]';
@@ -98,7 +139,7 @@ const TerminalApp: React.FC = () => {
             response = 'usage: touch [name]';
         }
         break;
-      case 'type': // Windows equivalent of cat
+      case 'type': 
       case 'cat':
         if (args[0]) {
             const targetId = fs.resolvePath(currentDirId, args[0]);
@@ -111,7 +152,6 @@ const TerminalApp: React.FC = () => {
         }
         break;
       case 'echo':
-         // Simple echo "text" > file support
          const redirectIdx = args.indexOf('>');
          if (redirectIdx !== -1 && args[redirectIdx + 1]) {
              const text = args.slice(0, redirectIdx).join(' ').replace(/"/g, '');
@@ -122,11 +162,51 @@ const TerminalApp: React.FC = () => {
              response = args.join(' ');
          }
          break;
+      case 'ps':
+         response = 'PID    USER     STATUS    COMMAND\n';
+         response += '---------------------------------\n';
+         windows.forEach(win => {
+             response += `${win.pid.toString().padEnd(7)} ${currentUser?.name.split(' ')[0].padEnd(9)} R         ${win.title.substring(0, 15)}\n`;
+         });
+         response += `8921    SYSTEM    R         System\n`;
+         response += `1102    SYSTEM    S         Registry`;
+         break;
+      case 'kill':
+         if (args[0]) {
+             const pid = parseInt(args[0]);
+             const win = windows.find(w => w.pid === pid);
+             if (win) {
+                 closeWindow(win.id);
+                 response = `Sent SIGTERM to process ${pid}`;
+             } else {
+                 response = `Process ${pid} not found`;
+             }
+         } else {
+             response = 'usage: kill [pid]';
+         }
+         break;
+      case 'neofetch':
+         extraLines.push(
+            `    .----------.      ${currentUser?.name}@WinOS-Web`,
+            `   /          / \\     ----------------`,
+            `  /          /   \\    OS: WinOS 11 Web Edition`,
+            ` /          /     \\   Uptime: ${Math.floor(system.uptime / 60)} mins`,
+            `/__________/       \\  Packages: ${system.installedApps.length} (npm)`,
+            `\\          \\       /  Shell: React Term 2.0`,
+            ` \\          \\     /   Resolution: ${window.innerWidth}x${window.innerHeight}`,
+            `  \\          \\   /    Theme: ${currentUser?.settings.theme}`,
+            `   \\__________\\ /     CPU: Simulated Virtual Core`,
+            `                      Memory: 644MB / 16GB`,
+            ``
+         );
+         break;
       default:
          response = `'${command}' is not recognized as an internal or external command.`;
     }
 
-    if (response) {
+    if (extraLines.length > 0) {
+        setHistory(prev => [...prev, ...extraLines, '']);
+    } else if (response) {
        const lines = response.split('\n');
        setHistory(prev => [...prev, ...lines, '']);
     } else {
@@ -135,14 +215,14 @@ const TerminalApp: React.FC = () => {
   };
 
   return (
-    <div className="h-full bg-black text-gray-200 font-mono text-sm p-2 overflow-auto" onClick={() => document.getElementById('terminal-input')?.focus()}>
+    <div className="h-full bg-[#0c0c0c] text-gray-200 font-mono text-sm p-2 overflow-auto scrollbar-hide" onClick={() => inputRef.current?.focus()}>
       {history.map((line, i) => (
         <div key={i} className="whitespace-pre-wrap leading-tight min-h-[1.2em]">{line}</div>
       ))}
       <div className="flex">
-        <span className="mr-2">{displayPath}&gt;</span>
+        <span className="mr-2 text-green-400">{displayPath}&gt;</span>
         <input
-          id="terminal-input"
+          ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
